@@ -324,7 +324,7 @@ func TestConsumeQueueSuccess(t *testing.T) {
 
 	// CONSUME
 	go func() {
-		err := rabbitmq.Consume(testEnv.ServOne.Consume, testEnv.ServOne.Publish.Queue)
+		err := rabbitmq.Consume(testEnv.ServOne.Consume, testEnv.ServOne.Publish.Queue, true, 24)
 		if err != nil {
 			log.Fatal("error creating consumer service:", err.Error())
 		}

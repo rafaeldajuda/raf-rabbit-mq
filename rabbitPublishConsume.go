@@ -1,7 +1,6 @@
 package rabbitmq
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -29,13 +28,13 @@ func (rabbitmq *Rabbitmq) Publish(messageID string, servInput []byte, header amq
 		}, // message to publish
 	)
 	if err != nil {
-		return errors.New("failed to publish a message: " + err.Error())
+		return fmt.Errorf("failed to publish a message: %s", err.Error())
 	}
 
 	return
 }
 
-func (rabbitmq *Rabbitmq) Consume(consume DefaultsQueues, publish DefaultQueue) error {
+func (rabbitmq *Rabbitmq) Consume(consume DefaultsQueues, publish DefaultQueue, retry bool, max int) error {
 
 	// CONSUME QUEUES
 	msgs, err := rabbitmq.Channel.Consume(
@@ -51,9 +50,9 @@ func (rabbitmq *Rabbitmq) Consume(consume DefaultsQueues, publish DefaultQueue) 
 		return fmt.Errorf("failed to register a consumer %s err: %s", consume.Queue.Queue, err.Error())
 	}
 
-	var forever chan struct{}
+	var forever chan error
 
-	go func() {
+	go func() error {
 		for d := range msgs {
 
 			// INPUT					/////////////////////////////////////////////////////////////
@@ -66,14 +65,9 @@ func (rabbitmq *Rabbitmq) Consume(consume DefaultsQueues, publish DefaultQueue) 
 			err := rabbitmq.Publish(messageID, inputBody, inputHeader, publish, "queue")
 			if err != nil {
 
-				// REPET QUEUE
-				if retryAttempt != nil {
-					fmt.Printf("[%s] retrying to publish message to exchange: %s", consume.Queue.Queue, consume.Delayed.Queue)
-					fmt.Printf("[%s] retrying publish message body: %+v", consume.Queue.Queue, string(inputBody))
-					fmt.Printf("retrying attempt: %v", retryAttempt)
-				} else {
-					fmt.Printf("[%s] publishing message to exchange: %s", consume.Queue.Queue, consume.Delayed.Queue)
-					fmt.Printf("[%s] publish message body: %+v", consume.Queue.Queue, string(inputBody))
+				// if false, repeat functions enabled
+				if retry {
+					return fmt.Errorf("unable to notify [%s] exchange (publish queue) err: %s", publish.Exchange, err.Error())
 				}
 
 				var counter int
@@ -87,32 +81,28 @@ func (rabbitmq *Rabbitmq) Consume(consume DefaultsQueues, publish DefaultQueue) 
 				}
 
 				// DEAD QUEUE
-				if counter > 24 {
-					err = rabbitmq.Publish("teste-rabbit", inputBody, inputHeader, consume.Dlx, "dlx")
+				if counter > max {
+					err = rabbitmq.Publish(messageID, inputBody, inputHeader, consume.Dlx, "dlx")
 					if err != nil {
-						fmt.Printf("[%s] out: %v", consume.Queue.Queue, err.Error())
-						fmt.Printf("[%s] unable to notify [%s] exchange (dead queue)", consume.Queue.Queue, consume.Dlx.Exchange)
-					} else {
-						fmt.Printf("[%s] successfully posted to exchange (dead queue) %s", consume.Queue.Queue, consume.Dlx.Exchange)
+						return fmt.Errorf("unable to notify [%s] exchange (dead queue) err: %s", consume.Dlx.Exchange, err.Error())
 					}
-				} // fim DEAD QUEUE
+				}
 
 				// RESEND MESSAGE QUEUE
-				if counter <= 24 {
-					err = rabbitmq.Publish("teste-rabbit", inputBody, inputHeader, consume.Delayed, "delayed")
+				if counter <= max {
+					err = rabbitmq.Publish(messageID, inputBody, inputHeader, consume.Delayed, "delayed")
 					if err != nil {
-						fmt.Printf("[%s] out: %v", consume.Queue.Queue, err.Error())
-						fmt.Printf("[%s] unable to notify [%s] exchange", consume.Queue.Queue, consume.Delayed.Exchange)
-					} else {
-						fmt.Printf("[%s] successfully posted to exchange %s", consume.Queue.Queue, consume.Delayed.Exchange)
+						return fmt.Errorf("unable to notify [%s] exchange (delayed queue) err: %s", consume.Delayed.Exchange, err.Error())
 					}
-				} // fim RESEND MESSAGE QUEUE
+				}
 
 			}
 
 		}
+
+		return nil
 	}()
 
-	<-forever
-	return nil
+	err = <-forever
+	return err
 }
